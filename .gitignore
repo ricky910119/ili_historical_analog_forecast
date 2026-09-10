@@ -1,0 +1,8 @@
+outputs/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+*.csv
+!tests/**/*.csv
+*.png
