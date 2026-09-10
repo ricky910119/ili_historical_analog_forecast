@@ -4,10 +4,31 @@
   "policy_notes": [
     "A DIM week whose own date set intersects any range below may not be used as the ratio denominator (x[8] for the current year, y[8] for a reference-year candidate).",
     "Nothing else changes: no other Spring Festival week's actual value is edited, interpolated, shifted or reshaped, and no data-derived 'anomalous week' threshold is introduced.",
-    "This is a boundary rule that requires explicit user confirmation. Set confirmed_by_user to true only after checking the dates against the cited source."
+    "This is a boundary rule that requires explicit user confirmation. Set confirmed_by_user to true only after checking the dates against the cited source.",
+    "The reference pool now spans 2023-2026, so every year in it needs an entry here; a reference year with no entry is refused rather than treated as having no holiday."
   ],
   "confirmed_by_user": false,
   "holidays": [
+    {
+      "year": 2023,
+      "event": "春節連續假期 (Lunar New Year holiday, ROC 112)",
+      "lunar_new_year_day": "2023-01-22",
+      "first_day": "2023-01-20",
+      "last_day": "2023-01-29",
+      "source": "行政院人事行政總處 中華民國112年政府行政機關辦公日曆表 (DGPA official calendar)",
+      "source_url": "https://www.dgpa.gov.tw/informationlist?uid=30",
+      "verified_by_user": false
+    },
+    {
+      "year": 2024,
+      "event": "春節連續假期 (Lunar New Year holiday, ROC 113)",
+      "lunar_new_year_day": "2024-02-10",
+      "first_day": "2024-02-08",
+      "last_day": "2024-02-14",
+      "source": "行政院人事行政總處 中華民國113年政府行政機關辦公日曆表 (DGPA official calendar)",
+      "source_url": "https://www.dgpa.gov.tw/informationlist?uid=30",
+      "verified_by_user": false
+    },
     {
       "year": 2025,
       "event": "春節連續假期 (Lunar New Year holiday, ROC 114)",

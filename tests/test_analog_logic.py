@@ -14,19 +14,20 @@ import pytest
 from ili_analog.analog import (LOOKBACK_WEEKS, build_current_window, check_supported_years,
                                normalised, run_analog, screen_candidates, score_candidates,
                                segment_distance)
+from ili_analog.cli import parse_years
 from ili_analog.data_pg import WeeklyRow, weekly_rows
 from ili_analog.dim_calendar import build_calendar, year_of
 from ili_analog.evaluate import metrics, persistence_baseline
 from ili_analog.holidays import SpringFestivalCalendar
 from ili_analog.util import Ineligible
 
-FIRST_DAY = date(2023, 12, 31)  # a Sunday: the synthetic calendar starts a week here
+FIRST_DAY = date(2023, 1, 1)  # a Sunday: the synthetic calendar starts a week here
 
 
-def make_calendar(weeks=160, day_count=7):
+def make_calendar(weeks=210, day_count=7):
     rows, day = [], FIRST_DAY
     for index in range(weeks):
-        year = 2024 + (index // 52)
+        year = 2023 + (index // 52)
         yearweek = year * 100 + (index % 52) + 1
         for _ in range(day_count):
             rows.append((day, yearweek))
@@ -34,12 +35,15 @@ def make_calendar(weeks=160, day_count=7):
     return build_calendar(rows)
 
 
-def make_spring(first="2025-01-25", last="2025-02-02", second=("2026-02-14", "2026-02-22")):
+RANGES = {2023: ("2023-01-20", "2023-01-29"), 2024: ("2024-02-08", "2024-02-14"),
+          2025: ("2025-01-25", "2025-02-02"), 2026: ("2026-02-14", "2026-02-22")}
+
+
+def make_spring(ranges=None):
+    ranges = ranges or RANGES
     payload = {"config_version": "test", "confirmed_by_user": True, "holidays": [
-        {"year": 2025, "event": "LNY 2025", "first_day": first, "last_day": last,
-         "source": "test fixture"},
-        {"year": 2026, "event": "LNY 2026", "first_day": second[0], "last_day": second[1],
-         "source": "test fixture"}]}
+        {"year": year, "event": f"LNY {year}", "first_day": first, "last_day": last,
+         "source": "test fixture"} for year, (first, last) in sorted(ranges.items())]}
     return SpringFestivalCalendar(Path("test-fixture.json"), payload)
 
 
@@ -55,6 +59,11 @@ def make_weekly(calendar, values, incomplete=()):
             total if complete else math.nan, 0 if complete else 1, 0,
             "complete" if complete else "incomplete")
     return rows
+
+
+# One fixed origin shared by the screening tests; the synthetic calendar is deterministic,
+# so this DimWeek is identical to the one any make_calendar() call produces.
+ORIGIN = make_calendar().week(202620)
 
 
 def full_values(calendar, level=1000.0):
@@ -119,7 +128,7 @@ def test_scaling_is_exact_and_identical_shape_wins():
     for source, target in zip(segment, current):
         values[target.yearweek] = values[source.yearweek] * 3.0
     weekly = make_weekly(calendar, values)
-    result = run_analog(calendar, weekly, spring, origin, 2025, 2026)
+    result = run_analog(calendar, weekly, spring, origin, (2025,), 2026)
     assert result.selected.compare_weeks[-1].yearweek == reference_end
     assert result.selected.distance == pytest.approx(0.0, abs=1e-12)
     future = calendar.slice(position + 1, position + 8)
@@ -162,21 +171,21 @@ def test_zero_origin_denominator_is_ineligible():
         build_current_window(calendar, weekly, make_spring(), calendar.week(202620), 2026)
 
 
-def test_candidates_outside_the_reference_year_are_excluded_with_a_reason():
+def test_candidates_outside_the_reference_years_are_excluded_with_a_reason():
     calendar = make_calendar()
     weekly = make_weekly(calendar, full_values(calendar))
-    screened = screen_candidates(calendar, weekly, make_spring(), 2025)
+    screened = screen_candidates(calendar, weekly, make_spring(), (2025,), ORIGIN)
     early = next(c for c in screened if c.end_position == calendar.position(202503))
     late = next(c for c in screened if c.end_position == calendar.position(202550))
-    assert "compare_window_not_in_reference_year" in early.reasons
-    assert "future_window_not_in_reference_year" in late.reasons
+    assert "compare_window_outside_reference_years" in early.reasons
+    assert "future_window_outside_reference_years" in late.reasons
     assert all(year_of(c.compare_weeks[-1].yearweek) == 2025 for c in screened if c.eligible)
 
 
 def test_spring_festival_excludes_only_the_candidate_denominator_week():
     calendar = make_calendar()
     weekly = make_weekly(calendar, full_values(calendar))
-    screened = screen_candidates(calendar, weekly, make_spring(), 2025)
+    screened = screen_candidates(calendar, weekly, make_spring(), (2025,), ORIGIN)
     excluded = [c for c in screened if "spring_festival_denominator_week" in c.reasons]
     assert excluded, "the 2025 holiday should exclude at least one denominator week"
     for candidate in excluded:
@@ -194,7 +203,7 @@ def test_tie_is_broken_toward_the_earlier_end_week():
     calendar = make_calendar()
     values = {w.yearweek: 100.0 for w in calendar.weeks}
     weekly = make_weekly(calendar, values)
-    screened = screen_candidates(calendar, weekly, make_spring(), 2025)
+    screened = screen_candidates(calendar, weekly, make_spring(), (2025,), ORIGIN)
     scored, selected = score_candidates(screened, weekly, [1.0] * LOOKBACK_WEEKS)
     eligible = [c for c in scored if c.eligible]
     assert len({c.distance for c in eligible}) == 1  # a genuine tie across the pool
@@ -207,7 +216,7 @@ def test_no_eligible_candidate_raises_ineligible():
     values = full_values(calendar)
     weekly = make_weekly(calendar, values, incomplete={w.yearweek for w in calendar.weeks
                                                        if year_of(w.yearweek) == 2025})
-    screened = screen_candidates(calendar, weekly, make_spring(), 2025)
+    screened = screen_candidates(calendar, weekly, make_spring(), (2025,), ORIGIN)
     with pytest.raises(Ineligible, match="no_eligible_candidate"):
         score_candidates(screened, weekly, [1.0] * LOOKBACK_WEEKS)
 
@@ -251,10 +260,43 @@ def test_persistence_baseline_holds_the_origin_week():
     assert persistence_baseline(12.5, 8) == [12.5] * 8
 
 
-def test_other_year_pairs_are_refused():
-    with pytest.raises(ValueError, match="supports only reference-year"):
-        check_supported_years(2024, 2025)
-    check_supported_years(2025, 2026)
+def test_unsupported_years_are_refused():
+    with pytest.raises(ValueError, match="supports reference years"):
+        check_supported_years((2019, 2025), 2026)
+    with pytest.raises(ValueError, match="supports only target-year"):
+        check_supported_years((2025,), 2025)
+    assert check_supported_years((2026, 2023, 2023), 2026) == (2023, 2026)
+
+
+def test_reference_year_ranges_parse():
+    assert parse_years("2023-2026") == (2023, 2024, 2025, 2026)
+    assert parse_years("2023,2025") == (2023, 2025)
+    assert parse_years(" 2025 ") == (2025,)
+
+
+def test_a_candidate_may_cross_a_year_boundary():
+    calendar = make_calendar()
+    weekly = make_weekly(calendar, full_values(calendar))
+    screened = screen_candidates(calendar, weekly, make_spring(), (2023, 2024, 2025), ORIGIN)
+    crossing = [c for c in screened if c.eligible
+                and len({year_of(w.yearweek) for w in c.compare_weeks + c.future_weeks}) > 1]
+    assert crossing, "a multi-year pool must admit segments that span a year boundary"
+
+
+def test_no_candidate_may_reach_past_the_origin():
+    """The rule that makes the target year safe to use as its own reference year."""
+    calendar = make_calendar()
+    weekly = make_weekly(calendar, full_values(calendar))
+    screened = screen_candidates(calendar, weekly, make_spring(), (2023, 2024, 2025, 2026), ORIGIN)
+    assert screened, "the pool must not be empty"
+    for candidate in screened:
+        if candidate.future_weeks:
+            assert (candidate.future_weeks[-1].end <= ORIGIN.end) == (
+                "candidate_window_reaches_past_origin" not in candidate.reasons)
+    for candidate in screened:
+        if candidate.eligible:
+            assert candidate.future_weeks[-1].end <= ORIGIN.end
+    assert any("candidate_window_reaches_past_origin" in c.reasons for c in screened),         "with the target year in the pool some candidates must be cut for reaching past origin"
 
 
 def test_spring_festival_config_shipped_in_the_repo_is_parsable():

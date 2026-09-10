@@ -18,8 +18,9 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import artifacts
-from .analog import (ALGORITHM_NOTES, ALGORITHM_VERSION, FORECAST_HORIZONS,
-                     HISTORY_PLOT_WEEKS, LOOKBACK_WEEKS, MIN_HISTORY_PLOT_WEEKS,
+from .analog import (ALGORITHM_NOTES, ALGORITHM_VERSION, DEFAULT_REFERENCE_YEARS,
+                     FORECAST_HORIZONS, HISTORY_PLOT_WEEKS, LOOKBACK_WEEKS,
+                     MIN_HISTORY_PLOT_WEEKS, REFERENCE_POOL_NOTES, SUPPORTED_REFERENCE_YEARS,
                      check_supported_years, plan_weeks, resolve_origin, run_analog,
                      screen_candidates)
 from .data_pg import (COUNTIES, SOURCES, panel_metadata, read_calendar, read_panel,
@@ -46,6 +47,7 @@ def algorithm_block():
         "selection": "single smallest distance; ties broken toward the earlier candidate end week",
         "scaling": "prediction[h] = x[8] * y_future[h] / y[8]",
         "notes": ALGORITHM_NOTES,
+        "reference_pool_rule": REFERENCE_POOL_NOTES,
         "probabilistic_model": None,
         "interval_policy": "no calibrated uncertainty model exists in v1; no interval is produced",
     }
@@ -68,7 +70,9 @@ def settings_block(args, origins):
     return {"mode": args.mode, "origins": list(origins),
             "settled_cutoff": args.settled_cutoff.isoformat(),
             "settled_cutoff_source": "explicit --settled-cutoff (required; never clock-derived)",
-            "reference_year": args.reference_year, "target_year": args.target_year,
+            "reference_years": list(args.reference_years),
+            "reference_years_supported": list(SUPPORTED_REFERENCE_YEARS),
+            "target_year": args.target_year,
             "history_plot_weeks": args.history_weeks,
             "spring_festival_config": str(args.spring_festival_config),
             "output_dir": str(args.output_dir)}
@@ -77,8 +81,9 @@ def settings_block(args, origins):
 def load_environment(args):
     """Config and DIM calendar. No target table is touched here."""
     spring = load_spring_festival(args.spring_festival_config)
-    require(spring.covers_year(args.reference_year),
-            f"Spring Festival config has no entry for reference year {args.reference_year}")
+    missing = [year for year in args.reference_years if not spring.covers_year(year)]
+    require(not missing,
+            f"Spring Festival config has no entry for reference year(s) {missing}")
     require(spring.covers_year(args.target_year),
             f"Spring Festival config has no entry for target year {args.target_year}")
     calendar = read_calendar()
@@ -87,7 +92,7 @@ def load_environment(args):
 
 def prepare_panel(args, calendar, origin_weeks):
     """One read covering every DIM week the requested origins need."""
-    plans = [plan_weeks(calendar, week, args.reference_year, args.history_weeks)
+    plans = [plan_weeks(calendar, week, args.reference_years, args.history_weeks)
              for week in origin_weeks]
     weeks = sorted({w.yearweek: w for plan in plans for w in plan[0]}.values(),
                    key=lambda w: w.start)
@@ -121,8 +126,10 @@ def candidate_block(records, selected=None):
     for record in records:
         for reason in record.reasons:
             reasons[reason] = reasons.get(reason, 0) + 1
-    block = {"enumeration": ("every DIM week of the reference year is offered as a candidate "
-                             "end week; excluded ones stay in candidate_scores.csv with a reason"),
+    block = {"enumeration": ("every DIM week of the reference-year set that ends at or before "
+                             "the origin is offered as a candidate end week; excluded ones stay "
+                             "in candidate_scores.csv with a reason"),
+             "pool_rule": REFERENCE_POOL_NOTES,
              "total": len(records), "eligible": sum(1 for r in records if r.eligible),
              "excluded": sum(1 for r in records if not r.eligible),
              "exclusion_reason_counts": dict(sorted(reasons.items()))}
@@ -196,13 +203,13 @@ def run_preflight(args, report, out_dir):
     report["dim_calendar"] = dim_block(calendar, weeks, origin_week)
     report["spring_festival"] = spring.metadata(weeks)
     report["completeness"] = completeness_block(weeks, weekly)
-    screened = screen_candidates(calendar, weekly, spring, args.reference_year)
+    screened = screen_candidates(calendar, weekly, spring, args.reference_years, origin_week)
     report["candidates"] = candidate_block(screened)
     weekly_written = artifacts.write_weekly_actuals(out_dir, weeks, weekly)
     report["digests"] = artifacts.input_digest(weekly_written, spring.digest,
                                                json.dumps(report["settings"], sort_keys=True))
     try:
-        result = run_analog(calendar, weekly, spring, origin_week, args.reference_year,
+        result = run_analog(calendar, weekly, spring, origin_week, args.reference_years,
                             args.target_year, args.history_weeks)
     except Ineligible as exc:
         report["status"] = "INELIGIBLE"
@@ -225,7 +232,7 @@ def run_forecast(args, report, out_dir):
     report["spring_festival"] = spring.metadata(weeks)
     report["completeness"] = completeness_block(weeks, weekly)
     try:
-        result = run_analog(calendar, weekly, spring, origin_week, args.reference_year,
+        result = run_analog(calendar, weekly, spring, origin_week, args.reference_years,
                             args.target_year, args.history_weeks)
     except Ineligible as exc:
         report["status"] = "INELIGIBLE"
@@ -233,7 +240,7 @@ def run_forecast(args, report, out_dir):
         report["forecast"] = "NOT PRODUCED"
         report["dim_calendar"] = dim_block(calendar, weeks, origin_week)
         report["candidates"] = candidate_block(
-            screen_candidates(calendar, weekly, spring, args.reference_year))
+            screen_candidates(calendar, weekly, spring, args.reference_years, origin_week))
         weekly_written = artifacts.write_weekly_actuals(out_dir, weeks, weekly)
         report["digests"] = artifacts.input_digest(
             weekly_written, spring.digest, json.dumps(report["settings"], sort_keys=True))
@@ -300,13 +307,14 @@ def run_backtest(args, report, out_dir):
                "environment": report["environment"]}
         try:
             result = run_analog(calendar, visible_weekly, spring, origin_week,
-                                args.reference_year, args.target_year, args.history_weeks)
+                                args.reference_years, args.target_year, args.history_weeks)
         except Ineligible as exc:
             sub["status"] = entry["status"] = "INELIGIBLE"
             sub["ineligible_reason"] = entry["ineligible_reason"] = str(exc)
             sub["dim_calendar"] = dim_block(calendar, visible_weeks, origin_week)
             sub["candidates"] = candidate_block(
-                screen_candidates(calendar, visible_weekly, spring, args.reference_year))
+                screen_candidates(calendar, visible_weekly, spring, args.reference_years,
+                                  origin_week))
             written = artifacts.write_weekly_actuals(origin_dir, visible_weeks, visible_weekly)
             sub["digests"] = artifacts.input_digest(
                 written, spring.digest, json.dumps(sub["settings"], sort_keys=True))
@@ -372,6 +380,22 @@ def run_backtest(args, report, out_dir):
     report["status"] = "BACKTEST_SCORED"
 
 
+def parse_years(text):
+    """"2023-2026" or "2023,2025" or "2025" -> a sorted tuple of distinct years."""
+    years = set()
+    for part in str(text).split(","):
+        part = part.strip()
+        require(bool(part), f"Empty year in --reference-years: {text!r}")
+        if "-" in part:
+            first, _, last = part.partition("-")
+            first, last = int(first), int(last)
+            require(first <= last, f"Reversed year range in --reference-years: {part!r}")
+            years.update(range(first, last + 1))
+        else:
+            years.add(int(part))
+    return tuple(sorted(years))
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(prog="python -m ili_analog.cli", description=__doc__)
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -382,7 +406,12 @@ def parse_args(argv=None):
         sub.add_argument("--settled-cutoff", required=True,
                          help="ISO date of the last settled week end; required, never derived "
                               "from the run clock")
-        sub.add_argument("--reference-year", type=int, default=2025)
+        sub.add_argument("--reference-years",
+                         default=f"{DEFAULT_REFERENCE_YEARS[0]}-{DEFAULT_REFERENCE_YEARS[-1]}",
+                         help="reference pool as a range or list, e.g. 2023-2026 or "
+                              "2023,2025. A segment may cross a year boundary but every one "
+                              f"of its 16 weeks must end at or before the origin. Supported: "
+                              f"{SUPPORTED_REFERENCE_YEARS}")
         sub.add_argument("--target-year", type=int, default=2026)
         sub.add_argument("--output-dir", default="outputs")
         sub.add_argument("--spring-festival-config", default=str(DEFAULT_CONFIG))
@@ -402,13 +431,14 @@ def parse_args(argv=None):
             sub.add_argument("--origin-yearweek", type=int, required=True)
     args = parser.parse_args(argv)
     args.settled_cutoff = date.fromisoformat(args.settled_cutoff)
+    args.reference_years = parse_years(args.reference_years)
     args.spring_festival_config = Path(args.spring_festival_config)
     args.output_dir = Path(args.output_dir)
     if getattr(args, "timesfm_forecast_csv", None):
         args.timesfm_forecast_csv = Path(args.timesfm_forecast_csv)
     require(args.history_weeks >= MIN_HISTORY_PLOT_WEEKS,
             f"--history-weeks must be at least {MIN_HISTORY_PLOT_WEEKS}")
-    check_supported_years(args.reference_year, args.target_year)
+    args.reference_years = check_supported_years(args.reference_years, args.target_year)
     return args
 
 

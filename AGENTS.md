@@ -4,6 +4,10 @@ Independent research project. Scope is this repository only.
 
 ## Hard rules
 
+0. **Reference pool is 2023-2026, target year is 2026.** A candidate segment may cross a
+   year boundary. Years outside 2023-2026 are refused: 2020-2022 carry the pandemic
+   disruption the other ILI research projects already exclude. Every reference year needs an
+   entry in `configs/spring_festival.json`.
 1. **v1 algorithm is frozen.** Segment normalisation is division by the segment's own last
    week; the score is the mean absolute difference of the two normalised 8-week segments; a
    single nearest segment is selected, ties broken toward the earlier candidate end week;
@@ -11,7 +15,9 @@ Independent research project. Scope is this repository only.
    warping, top-k or multi-segment averaging, recent-trend blending, manual reshaping,
    smoothing, injected noise or forced upward drift.
 2. **Never use a future actual** to select or adjust a segment. Forecast generation and
-   scoring stay in separate phases.
+   scoring stay in separate phases. Concretely: every one of a candidate's 16 DIM weeks
+   (8 compare + 8 following) must end at or before the origin week. This is what allows the
+   target year to sit in the reference pool at all - do not relax it.
 3. **DIM is the only week authority** (`DIM_DATA.public.dim_weekdate`). Never ISO week,
    `pandas.resample("W")`, a fixed weekday, `origin + h * 7`, a fixed 7-day slice, a fixed
    56-day horizon, or `yearweek + 1`.

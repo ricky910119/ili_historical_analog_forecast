@@ -1,6 +1,6 @@
 # ili_historical_analog_forecast
 
-以 **2025 年的歷史相似波形**，搭配 **2026 年最新的人次水位**，預測全國 ILI 未來 **H1–H8** 的週就診人次。
+以 **2023–2026 年的歷史相似波形**，搭配 **2026 年最新的人次水位**，預測全國 ILI 未來 **H1–H8** 的週就診人次。
 
 這是一個獨立研究專案。它 **不使用 LLM、不使用 TimesFM、不需要 GPU**，也 **不會**被加入
 `disease_forecast_llm_model_router` 的正式候選池。
@@ -12,14 +12,14 @@
 | 項目 | 值 |
 | --- | --- |
 | `algorithm_version` | `historical-analog-v1` |
-| `reference_year` | 2025 |
+| `reference_years` | 2023–2026（預設，可用 `--reference-years` 縮小） |
 | `target_year` | 2026 |
 | `lookback_weeks` | 8 |
 | `forecast_horizons` | H1–H8 |
 | target | 全國 ILI＝`nhi_opd` + `rods` 的週就診人次 |
 
 設今年截至有效 origin 的最近 8 個完整 DIM 週人次為 `x[1..8]`，
-某個 2025 年合格候選片段為 `y[1..8]`，各自除以自身最後一週：
+候選池中某個合格片段為 `y[1..8]`，各自除以自身最後一週：
 
 ```
 u[i] = x[i] / x[8]
@@ -36,6 +36,17 @@ distance = mean( |u[i] - v[i]| ),  i = 1..8
 prediction[h] = x[8] * y_future[h] / y[8]
 ```
 
+### 候選池規則
+
+候選片段可以落在參考年集合中的任何位置，**也可以跨年**（例如 2023-12 到 2024-01）。
+唯一的硬性限制是：**該候選的 16 個 DIM 週（比對 8 週 + 後續 8 週）全部必須結束於
+origin 當週或更早**。
+
+這條規則就是「2026 自己也能當參考年」的前提 —— 若候選的後續 8 週延伸到 origin 之後，
+它讀到的就是預測本身無權看見的實際值。被此規則排除的候選會記為
+`candidate_window_reaches_past_origin`。
+
+擴大候選池只是把搜尋範圍變寬：**仍然只選 distance 最小的單一片段，永遠不做平均**。
 ### 刻意不做的事（v1 不得加入）
 
 - 不以 z-score 取代上述標準化。
@@ -99,7 +110,8 @@ ORDER BY date
 以 yearweek 整數加一推導下一週。
 
 - 「2025 年」「2026 年」一律取自 DIM `yearweek // 100`。
-- 2025 候選的比對 8 週與其後續 8 週，**都必須整段落在 DIM yearweek 的 2025 年**。
+- 候選的比對 8 週與其後續 8 週，**都必須整段落在參考年集合內**（可跨年），
+  且 **全部結束於 origin 當週或更早**。
 - 今年比對窗口的 8 週必須 **全部屬於 2026 年**；
   年初不足 8 週時回報 `INELIGIBLE`，**不向前一年借週**。
 - H1–H8 是 origin 之後 **連續八個 DIM 週**；DIM 未涵蓋時明確失敗（不推導、不外插）。
@@ -115,7 +127,7 @@ ORDER BY date
 - 合法且已觀測的實際 0 會保留；但 `x[8]` 與 `y[8]` 必須 **大於 0**。
 - 任一來源不完整時，該週 `ili_total` 標為缺值，**不用部分縣市或部分來源湊全國總數**。
 - 今年窗口有缺漏 → `INELIGIBLE`；**不跳過缺週拼接，也不自動改選較早 origin**。
-- 去年候選任一比對週或後續週不完整 → 排除該候選，理由寫入 `candidate_scores.csv`。
+- 候選任一比對週或後續週不完整 → 排除該候選，理由寫入 `candidate_scores.csv`。
 - 沒有任何合法候選 → `INELIGIBLE`，**不退回預設預測**。
 - `--settled-cutoff` 為 **必填**，由使用者明確指定；本專案 **不從執行時鐘推導**。
   origin 必須存在於 DIM，且其週末日期不得晚於 `settled_cutoff`。
@@ -128,18 +140,18 @@ ORDER BY date
 - 事件日期必須有來源（`source` 欄位為必填），並透過 DIM 的實際日期集合映射到週次。
 - 若 **今年 origin 週** 或 **候選的最後一週**（即比例分母週）與設定的春節假期重疊：
   - 今年 → 回報 `INELIGIBLE`；
-  - 去年候選 → 排除該候選（理由 `spring_festival_denominator_week`）。
+  - 候選 → 排除該候選（理由 `spring_festival_denominator_week`）。
 - 春節判定只需要 DIM 日曆，因此 **只要候選有分母週就會記錄此理由**，
-  即使該候選已被跨年規則排除；理由統計因而保持可稽核。
-  以 2025 為參考年時，春節週落在年初前 8 週內，本來就已被跨年規則排除，
-  所以此規則對候選池 **沒有實際影響**；它真正生效的地方是 2026 origin 的分母週。
+  即使該候選已被其他規則排除；理由統計因而保持可稽核。
+- 參考年集合中的 **每一年都必須在設定檔裡有一筆**；缺年份時直接拒絕執行，
+  不會當成「該年沒有春節」放行。
 - **不修改其他春節週的實際值、不插值、不移動全年波形**，
   也 **不新增任何資料推導的「異常週」門檻**。
 
-> ⚠️ **待確認**：設定檔目前 `confirmed_by_user: false`，且兩筆假期的
-> `verified_by_user` 皆為 `false`。2025 與 2026 的春節連假日期請對照
-> 行政院人事行政總處（DGPA）公布的政府行政機關辦公日曆表核對後，
-> 再將旗標改為 `true`。程式會把此狀態原樣寫入 `run.json`，不會偷偷通過。
+> ⚠️ **待確認**：設定檔目前 `confirmed_by_user: false`，且 2023、2024、2025、2026
+> 四筆假期的 `verified_by_user` 皆為 `false`。請對照行政院人事行政總處（DGPA）
+> 公布的政府行政機關辦公日曆表核對後，再將旗標改為 `true`。
+> 程式會把此狀態原樣寫入 `run.json`，不會偷偷通過。
 
 ---
 
@@ -155,8 +167,8 @@ python -m ili_analog.cli <preflight|forecast|backtest> [options]
 | --- | --- |
 | `--settled-cutoff` | **必填**，ISO 日期；最後一個已結算週的週末日期 |
 | `--origin-yearweek` | DIM yearweek，例如 `202635`（`backtest` 可重複指定多次） |
-| `--reference-year` | 預設 `2025` |
-| `--target-year` | 預設 `2026` |
+| `--reference-years` | 候選池年份，預設 `2023-2026`；接受區間或清單，如 `2023-2025`、`2023,2025` |
+| `--target-year` | 預設 `2026`（v1 只支援 2026） |
 | `--output-dir` | 輸出根目錄，預設 `outputs` |
 | `--spring-festival-config` | 預設 `configs/spring_festival.json` |
 | `--history-weeks` | 預測圖顯示的今年週數，預設 26，最少 16 |
@@ -168,8 +180,9 @@ python -m ili_analog.cli <preflight|forecast|backtest> [options]
 | `--timesfm-forecast-csv` | 既有 TimesFM 預測檔（欄位 `origin_yearweek, yearweek, prediction`）；**本 repo 絕不重新呼叫 TimesFM**，未提供即標記 `NOT AVAILABLE` |
 | `--no-score` | 只做第一階段預測產生，完全不讀未來實際值 |
 
-`--reference-year` / `--target-year` 只支援 `2025 → 2026`。
-其他年份會 **明確拒絕**，不假裝已泛化。
+`--reference-years` 只接受 `2023`–`2026`；`--target-year` 只接受 `2026`。
+其他年份會 **明確拒絕**，不假裝已泛化 —— 2020–2022 帶有疫情期間的結構性斷裂，
+既有 ILI 研究專案本來就把那三年排除，本專案也未對其驗證過。
 
 三種模式：
 
@@ -242,6 +255,9 @@ signed_bias_ratio = sum(pred - actual)   / sum(actual)
 
 ## 8. 研究限制（必讀）
 
+- 候選池含 2026 自己。這在資料可用性上是安全的（每個候選的 16 週都不得超過 origin），
+  但代表「歷史類比」有可能挑到今年稍早的片段，形成短延遲自我類比。
+  `candidate_scores.csv` 會顯示選中片段的實際年份，請務必檢視。
 - 這個方法是在 **看過 2026 圖之後** 提出的。因此 2026 回測只能標示為
   **exploratory retrospective evaluation**，
   **不得**宣稱 untouched holdout、out-of-sample，或作為正式升級證據。
@@ -315,6 +331,12 @@ GROUP BY yearweek ORDER BY yearweek;
 ```
 
 把該週的 `week_end` 填進 `--settled-cutoff`、`yearweek` 填進 `--origin-yearweek`。
+
+### 縮小候選池
+
+`--reference-years` 預設就是 `2023-2026`，上面的命令寫出來只是為了明確。
+想排除今年自我類比就用 `--reference-years 2023-2025`；
+想回到最初的單一參考年版本就用 `--reference-years 2025`。
 
 依賴：Python 3.9+、`matplotlib`（僅畫圖用）、`pytest`（僅測試用），
 以及環境中既有的 `eic_utils`。

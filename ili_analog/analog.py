@@ -1,7 +1,9 @@
 """The fixed v1 historical-analog algorithm.
 
 Current year: x[1..8] are the eight complete DIM weeks ending at the origin.
-Reference year: y[1..8] are an eligible eight-week candidate segment.
+Reference pool: y[1..8] is an eligible eight-week candidate segment drawn from the
+reference-year set. A segment may cross a year boundary, and all 16 of its weeks (8 compare
++ 8 following) must end at or before the origin week.
 Both are divided by their own last week:  u[i] = x[i]/x[8],  v[i] = y[i]/y[8].
 distance = mean(|u[i] - v[i]|) over i = 1..8; the single smallest distance wins, ties
 broken toward the earlier candidate end week.
@@ -23,7 +25,8 @@ from .util import Ineligible, require
 ALGORITHM_VERSION = "historical-analog-v1"
 LOOKBACK_WEEKS = 8
 FORECAST_HORIZONS = 8
-SUPPORTED_REFERENCE_YEAR = 2025
+SUPPORTED_REFERENCE_YEARS = (2023, 2024, 2025, 2026)
+DEFAULT_REFERENCE_YEARS = (2023, 2024, 2025, 2026)
 SUPPORTED_TARGET_YEAR = 2026
 HISTORY_PLOT_WEEKS = 26
 MIN_HISTORY_PLOT_WEEKS = 16
@@ -34,6 +37,12 @@ ALGORITHM_NOTES = (
     "selection: single nearest segment, ties broken toward the earlier candidate end week; "
     "scaling: prediction[h] = x8 * y_future[h] / y8; "
     "no DTW, time warping, top-k averaging, trend blending, smoothing, noise or reshaping"
+)
+REFERENCE_POOL_NOTES = (
+    "a candidate segment may sit anywhere inside the reference-year set and may cross a year "
+    "boundary; every one of its 16 DIM weeks (8 compare + 8 following) must end at or before "
+    "the origin week, so no candidate can ever read an actual the forecast itself may not see. "
+    "A larger pool only widens the search: still one nearest segment, never an average"
 )
 
 Candidate = namedtuple(
@@ -46,14 +55,24 @@ AnalogResult = namedtuple(
     "predictions history_weeks")
 
 
-def check_supported_years(reference_year, target_year):
-    """v1 is pinned to 2025 -> 2026. Other years are refused, not silently generalised."""
-    require(int(reference_year) == SUPPORTED_REFERENCE_YEAR
-            and int(target_year) == SUPPORTED_TARGET_YEAR,
-            f"{ALGORITHM_VERSION} supports only reference-year {SUPPORTED_REFERENCE_YEAR} "
-            f"with target-year {SUPPORTED_TARGET_YEAR}; got {reference_year} -> {target_year}. "
-            "The method is not generalised to other year pairs and this run refuses to "
-            "pretend otherwise.")
+def check_supported_years(reference_years, target_year):
+    """The reference pool must stay inside the years this method was designed for.
+
+    v1 forecasts 2026 only. Reference years outside 2023-2026 are refused rather than
+    silently accepted: 2020-2022 carry the pandemic disruption that the other ILI research
+    projects already exclude, and nothing here has been validated against them.
+    """
+    years = tuple(sorted({int(year) for year in reference_years}))
+    require(bool(years), "At least one reference year is required")
+    unsupported = [year for year in years if year not in SUPPORTED_REFERENCE_YEARS]
+    require(not unsupported,
+            f"{ALGORITHM_VERSION} supports reference years {SUPPORTED_REFERENCE_YEARS}; got "
+            f"{unsupported}. The method is not generalised to those years and this run refuses "
+            "to pretend otherwise.")
+    require(int(target_year) == SUPPORTED_TARGET_YEAR,
+            f"{ALGORITHM_VERSION} supports only target-year {SUPPORTED_TARGET_YEAR}; got "
+            f"{target_year}.")
+    return years
 
 
 def resolve_origin(calendar, origin_yearweek, settled_cutoff):
@@ -65,24 +84,29 @@ def resolve_origin(calendar, origin_yearweek, settled_cutoff):
     return week
 
 
-def candidate_end_positions(calendar, reference_year):
-    """Enumeration set: every DIM week of the reference year is offered as a candidate end.
+def candidate_end_positions(calendar, reference_years, origin_week):
+    """Enumeration set: every DIM week of the reference-year set that ends at or before origin.
 
     Ineligible ones stay in candidate_scores.csv with their exclusion reason rather than
-    being silently dropped, so the candidate denominator is auditable.
+    being silently dropped, so the candidate denominator is auditable. A week ending after the
+    origin is not enumerated at all: it is not a candidate this run is allowed to consider.
     """
+    years = set(reference_years)
     return [i for i, week in enumerate(calendar.weeks)
-            if year_of(week.yearweek) == reference_year]
+            if year_of(week.yearweek) in years and week.end <= origin_week.end]
 
 
-def plan_weeks(calendar, origin_week, reference_year, history_plot_weeks=HISTORY_PLOT_WEEKS):
+def plan_weeks(calendar, origin_week, reference_years, history_plot_weeks=HISTORY_PLOT_WEEKS):
     """Every DIM week whose actuals this run needs, and the date range to read.
 
-    Candidates whose compare or future window leaves the reference year are excluded on the
-    calendar alone, so their weeks are never read.
+    Only weeks inside the reference-year set that end at or before the origin are read, plus
+    the recent weeks the forecast figure shows. Candidates reaching outside that set are
+    excluded on the calendar alone, so their weeks are never read.
     """
+    years = set(reference_years)
     origin_position = calendar.position(origin_week.yearweek)
-    needed = {w.yearweek: w for w in calendar.weeks if year_of(w.yearweek) == reference_year}
+    needed = {w.yearweek: w for w in calendar.weeks
+              if year_of(w.yearweek) in years and w.end <= origin_week.end}
     first_history = max(0, origin_position - max(history_plot_weeks, LOOKBACK_WEEKS) + 1)
     for week in calendar.slice(first_history, origin_position):
         needed[week.yearweek] = week
@@ -138,14 +162,20 @@ def build_current_window(calendar, weekly, spring, origin_week, target_year):
     return weeks, values
 
 
-def screen_candidates(calendar, weekly, spring, reference_year):
-    """Structural eligibility of every reference-year candidate, independent of this year.
+def screen_candidates(calendar, weekly, spring, reference_years, origin_week):
+    """Structural eligibility of every candidate, independent of this year's window.
 
     Screening never looks at the current-year window, so preflight can report the candidate
     pool even when the current-year window itself is ineligible.
+
+    A candidate segment may cross a year boundary, but all 16 of its DIM weeks must sit inside
+    the reference-year set and must end at or before the origin week. That last rule is what
+    keeps the target year usable as its own reference year: a segment whose following weeks
+    reach past the origin would be reading an actual the forecast is not allowed to see.
     """
+    years = set(reference_years)
     records = []
-    for position in candidate_end_positions(calendar, reference_year):
+    for position in candidate_end_positions(calendar, reference_years, origin_week):
         reasons, compare, future = [], (), ()
         if position - LOOKBACK_WEEKS + 1 < 0:
             reasons.append("dim_calendar_missing_compare_weeks")
@@ -155,10 +185,13 @@ def screen_candidates(calendar, weekly, spring, reference_year):
             reasons.append("dim_calendar_missing_future_weeks")
         else:
             future = calendar.slice(position + 1, position + FORECAST_HORIZONS)
-        if compare and any(year_of(w.yearweek) != reference_year for w in compare):
-            reasons.append("compare_window_not_in_reference_year")
-        if future and any(year_of(w.yearweek) != reference_year for w in future):
-            reasons.append("future_window_not_in_reference_year")
+        if compare and any(year_of(w.yearweek) not in years for w in compare):
+            reasons.append("compare_window_outside_reference_years")
+        if future and any(year_of(w.yearweek) not in years for w in future):
+            reasons.append("future_window_outside_reference_years")
+        if future and future[-1].end > origin_week.end:
+            # The only rule that makes the target year safe to use as its own reference year.
+            reasons.append("candidate_window_reaches_past_origin")
         # The Spring Festival denominator rule needs only the DIM calendar, so it is recorded
         # for every candidate that has a denominator week, even one already excluded on the
         # calendar. Weekly counts exist only for weeks this run read, so the completeness and
@@ -197,21 +230,23 @@ def score_candidates(records, weekly, current_normalised):
     return records, selected
 
 
-def run_analog(calendar, weekly, spring, origin_week, reference_year, target_year,
+def run_analog(calendar, weekly, spring, origin_week, reference_years, target_year,
                history_plot_weeks=HISTORY_PLOT_WEEKS):
     """Full selection and scaling for one origin. Reads no actual after the origin."""
-    check_supported_years(reference_year, target_year)
+    reference_years = check_supported_years(reference_years, target_year)
     current_weeks, current_values = build_current_window(
         calendar, weekly, spring, origin_week, target_year)
     x8 = current_values[-1]
     candidates, selected = score_candidates(
-        screen_candidates(calendar, weekly, spring, reference_year), weekly,
+        screen_candidates(calendar, weekly, spring, reference_years, origin_week), weekly,
         normalised(current_values))
     y8 = weekly[selected.compare_weeks[-1].yearweek].ili_total
     target_weeks = calendar.window_after(origin_week.yearweek, FORECAST_HORIZONS)
     predictions = [x8 * weekly[w.yearweek].ili_total / y8 for w in selected.future_weeks]
     require(all(math.isfinite(v) for v in predictions),
             "Non-finite prediction from the selected segment")
+    require(selected.future_weeks[-1].end <= origin_week.end,
+            "Selected segment reaches past the origin; the candidate screen is broken")
     origin_position = calendar.position(origin_week.yearweek)
     first_history = max(0, origin_position - history_plot_weeks + 1)
     history_weeks = calendar.slice(first_history, origin_position)
