@@ -191,8 +191,8 @@ python -m ili_analog.cli <preflight|forecast|backtest> [options]
 | `candidate_scores.csv` | 候選起迄週、是否符合資格與排除原因、合法候選的 `distance`、排名、是否選中 |
 | `matched_window.csv` | 相對位置 1–8、今年與去年 DIM 週次、原始人次、標準化值、絕對差 |
 | `forecast.csv` | origin、horizon、目標 DIM week、週起迄、選中歷史片段、去年後續人次、相對倍率、預測人次 |
-| `analog_comparison_<origin>.png` | 圖 A：相似片段比較 |
-| `forecast_h1_h8_<origin>.png` | 圖 B：H1–H8 預測 |
+| `ILI_<origin>_analog_match.png` | 圖 A：相似片段比較（標準化overlay + 換算到今年水位 + 逐週對照表） |
+| `ILI_<origin>_h1_h8_national.png` | 圖 B：H1–H8 預測（近期實際值、origin、預測與逐 horizon 表） |
 
 `backtest` 另有：
 
@@ -201,9 +201,14 @@ python -m ili_analog.cli <preflight|forecast|backtest> [options]
 | `origins/<yearweek>/…` | 每個 origin 的完整 artifact 組（含自己的 `run.json`） |
 | `evaluation.csv` | 逐列 `model, origin, horizon, target week, prediction, actual, actual_status, error` |
 | `metrics.json` | MAE、WAPE、signed_bias_ratio；整體、逐 horizon、以及完整 H1–H8 origin cohort |
-| `origins/<yw>/forecast_h1_h8_<yw>_scored.png` | 揭露實際值後另存的圖，**不覆蓋**第一階段的預測圖 |
+| `origins/<yw>/ILI_<yw>_h1_h8_national_scored.png` | 揭露實際值後另存的圖，**不覆蓋**第一階段的預測圖 |
 
 CSV／JSON 一律保存原始浮點值；四捨五入只發生在圖表。
+
+圖表沿用既有全國 ILI 研究圖的風格：`#626D71` / `#839D9A` / `#9E8F8A` /
+`#AAA39B` / `#E5E0DA` 配色、15×9 版面、CJK 字型偵測（找不到時自動改用英文標籤）、
+圖下方只有橫線的數值表、虛線 origin 標記、pending horizon 以空心點加淺色區塊表示、
+300 dpi 輸出。
 
 ---
 
