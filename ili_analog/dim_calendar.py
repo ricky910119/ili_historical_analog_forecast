@@ -100,8 +100,11 @@ def build_calendar(rows):
         require(raw_week is not None, f"NULL DIM yearweek at {day}")
         week = int(raw_week)
         require(str(week) == str(raw_week).strip(), f"Invalid DIM yearweek: {raw_week!r}")
-        require(190001 <= week <= 999953, f"DIM yearweek out of range: {week}")
-        require(1 <= week_number_of(week) <= 53, f"DIM week number out of range: {week}")
+        require(190001 <= week <= 999999, f"DIM yearweek out of range: {week}")
+        # DIM owns its own week numbering: some DIM years carry a week 53 or 54, so the only
+        # rule imposed here is that the week part stays two digits, which is what keeps
+        # year_of() well defined. Ordering and tiling are validated below instead.
+        require(1 <= week_number_of(week) <= 99, f"DIM week number out of range: {week}")
         by_week.setdefault(week, []).append(day)
     require(bool(by_week), "Empty DIM_DATA.public.dim_weekdate")
     weeks = []

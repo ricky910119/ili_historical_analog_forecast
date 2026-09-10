@@ -159,15 +159,19 @@ def screen_candidates(calendar, weekly, spring, reference_year):
             reasons.append("compare_window_not_in_reference_year")
         if future and any(year_of(w.yearweek) != reference_year for w in future):
             reasons.append("future_window_not_in_reference_year")
-        if not reasons:
+        # The Spring Festival denominator rule needs only the DIM calendar, so it is recorded
+        # for every candidate that has a denominator week, even one already excluded on the
+        # calendar. Weekly counts exist only for weeks this run read, so the completeness and
+        # denominator checks below stay behind the calendar tier.
+        if compare and spring.overlap(compare[-1]):
+            reasons.append("spring_festival_denominator_week")
+        if not [r for r in reasons if r != "spring_festival_denominator_week"]:
             if any(weekly[w.yearweek].status != "complete" for w in compare):
                 reasons.append("incomplete_compare_week")
             if any(weekly[w.yearweek].status != "complete" for w in future):
                 reasons.append("incomplete_future_week")
-            if spring.overlap(compare[-1]):
-                reasons.append("spring_festival_denominator_week")
-        if not reasons and not segment_values(weekly, compare)[-1] > 0:
-            reasons.append("nonpositive_denominator")
+            if not reasons and not segment_values(weekly, compare)[-1] > 0:
+                reasons.append("nonpositive_denominator")
         records.append(Candidate(position, tuple(compare), tuple(future), not reasons,
                                  tuple(reasons), math.nan, None, False))
     return records

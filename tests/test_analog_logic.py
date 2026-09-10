@@ -81,6 +81,15 @@ def test_calendar_accepts_short_week():
     assert [len(w.days) for w in calendar.weeks] == [7, 4]
 
 
+def test_calendar_accepts_a_dim_year_with_more_than_53_weeks():
+    """DIM owns its week numbering; the real calendar carries yearweeks such as 200054."""
+    rows = [(date(2000, 12, 24) + timedelta(days=i), 200053) for i in range(7)]
+    rows += [(date(2000, 12, 31), 200054)]
+    calendar = build_calendar(rows)
+    assert [w.yearweek for w in calendar.weeks] == [200053, 200054]
+    assert year_of(200054) == 2000
+
+
 def test_year_of_reads_the_dim_yearweek():
     assert year_of(202601) == 2026 and year_of(202552) == 2025
 
@@ -172,6 +181,10 @@ def test_spring_festival_excludes_only_the_candidate_denominator_week():
     assert excluded, "the 2025 holiday should exclude at least one denominator week"
     for candidate in excluded:
         assert make_spring().overlap(candidate.compare_weeks[-1]) is not None
+        assert not candidate.eligible
+    # The reason is recorded on the calendar alone, so it still appears on a candidate that
+    # another rule had already excluded; the statistics stay auditable.
+    assert any(len(c.reasons) > 1 for c in excluded)
     # Weeks that merely contain the holiday elsewhere in a segment stay eligible.
     assert any(c.eligible and any(make_spring().overlap(w) for w in c.compare_weeks[:-1])
                for c in screened)

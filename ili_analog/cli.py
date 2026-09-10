@@ -24,7 +24,7 @@ from .analog import (ALGORITHM_NOTES, ALGORITHM_VERSION, FORECAST_HORIZONS,
                      screen_candidates)
 from .data_pg import (COUNTIES, SOURCES, panel_metadata, read_calendar, read_panel,
                       weekly_rows)
-from .dim_calendar import CALENDAR_RULES
+from .dim_calendar import CALENDAR_RULES, week_number_of
 from .evaluate import (ANALOG_NAME, BASELINE_DEFINITION, BASELINE_NAME, EVALUATION_CAVEAT,
                        EVALUATION_LABEL, SNAPSHOT_CAVEAT, TIMESFM_NAME,
                        load_timesfm_predictions, persistence_baseline, summarise)
@@ -142,7 +142,10 @@ def dim_block(calendar, weeks, origin_week=None, target_weeks=()):
     block = {"rules": CALENDAR_RULES, "weeks_in_calendar": len(calendar),
              "first_week": calendar.at(0).yearweek, "last_week": calendar.at(-1).yearweek,
              "weeks_used": len(weeks),
-             "day_counts_used": sorted({len(w.days) for w in weeks})}
+             "day_counts_used": sorted({len(w.days) for w in weeks}),
+             # DIM owns its week numbering; the observed range is recorded rather than capped.
+             "week_numbers_in_calendar": sorted({week_number_of(w.yearweek)
+                                                 for w in calendar.weeks})}
     if origin_week is not None:
         block["origin_week"] = {"yearweek": origin_week.yearweek,
                                 "week_start": origin_week.start.isoformat(),
