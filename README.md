@@ -260,13 +260,13 @@ python -m pytest tests -q
 # 1) preflight：檢查設定、DIM、完整性與候選數
 python -m ili_analog.cli preflight \
     --origin-yearweek 202635 \
-    --settled-cutoff 2026-08-29 \
+    --settled-cutoff 2026-09-05 \
     --output-dir outputs
 
 # 2) 單次預測：origin 202635 的 H1–H8
 python -m ili_analog.cli forecast \
     --origin-yearweek 202635 \
-    --settled-cutoff 2026-08-29 \
+    --settled-cutoff 2026-09-05 \
     --output-dir outputs
 
 # 3) 探索性回測：多個 2026 origin
@@ -276,25 +276,40 @@ python -m ili_analog.cli backtest \
     --origin-yearweek 202620 \
     --origin-yearweek 202624 \
     --origin-yearweek 202628 \
-    --settled-cutoff 2026-08-29 \
+    --settled-cutoff 2026-09-05 \
     --output-dir outputs
 
 # 4) 只產生回測預測、完全不讀未來實際值
 python -m ili_analog.cli backtest \
     --origin-yearweek 202612 --origin-yearweek 202620 \
-    --settled-cutoff 2026-08-29 --no-score \
+    --settled-cutoff 2026-09-05 --no-score \
     --output-dir outputs
 
 # 5) 附帶既有 TimesFM 預測檔的比較（不會重新呼叫 TimesFM）
 python -m ili_analog.cli backtest \
     --origin-yearweek 202612 --origin-yearweek 202620 \
-    --settled-cutoff 2026-08-29 \
+    --settled-cutoff 2026-09-05 \
     --timesfm-forecast-csv /path/to/timesfm_national_h1_h8.csv \
     --output-dir outputs
 ```
 
-`--settled-cutoff` 請填入實際已結算的最後一個 DIM 週週末日期；上面的
-`2026-08-29` 只是格式範例，執行前務必依當時 ETL 狀態調整。
+### 如何挑 `--origin-yearweek` 與 `--settled-cutoff`
+
+兩者必須自洽：**origin 的週末日期不得晚於 `settled_cutoff`**，否則程式直接拒絕
+（不會自動改用較早的 origin）。上面用的 `202635 / 2026-09-05` 是自洽的一組
+（202635 的週末即 2026-09-05）；`202634` 對應的則是 `2026-08-29`。
+
+依既有 ETL 節奏（週三 15:00 載入、NHI 回補約三天），已結算的通常是
+「含最近一次 ETL 執行的那個 DIM 週」的 **前一週**。實際週界請直接向 DIM 查證：
+
+```sql
+SELECT yearweek, MIN(date) AS week_start, MAX(date) AS week_end
+FROM public.dim_weekdate
+WHERE yearweek BETWEEN 202630 AND 202640
+GROUP BY yearweek ORDER BY yearweek;
+```
+
+把該週的 `week_end` 填進 `--settled-cutoff`、`yearweek` 填進 `--origin-yearweek`。
 
 依賴：Python 3.9+、`matplotlib`（僅畫圖用）、`pytest`（僅測試用），
 以及環境中既有的 `eic_utils`。
